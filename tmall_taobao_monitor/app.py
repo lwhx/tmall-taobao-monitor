@@ -6,9 +6,9 @@
 
 import re
 import json
-import os
 import sqlite3
 import requests
+import websocket
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime
 from threading import Lock
@@ -19,7 +19,15 @@ from apscheduler.schedulers.background import BackgroundScheduler
 COOKIE_FILE = "cookies.txt"
 DATABASE = "monitor.db"
 AUTO_MONITOR_INTERVAL = 30           # 分钟
+CDP_ENDPOINT = "http://127.0.0.1:9222"
+CDP_COOKIE_SYNC_INTERVAL = 360       # 分钟
 MONITOR_LOCK = Lock()
+CDP_LOCK = Lock()
+CDP_SYNC_STATUS = {
+    "last_sync_at": None,
+    "cookie_count": 0,
+    "error": "尚未同步",
+}
 
 PLATFORM_HEADERS = {
     "taobao": {
@@ -87,7 +95,7 @@ def save_record(record):
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO monitor_records 
+        INSERT INTO monitor_records
         (timestamp, url, platform, item_id, shop_name, title, min_price, images, params)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
@@ -213,6 +221,50 @@ def load_cookie_from_file(file_path):
 def save_cookie_to_file(cookie_str, file_path):
     with open(file_path, 'w', encoding='utf-8') as f:
         f.write(cookie_str.strip())
+
+def get_cdp_cookies():
+    targets = requests.get(f"{CDP_ENDPOINT}/json", timeout=3).json()
+    page_target = next((target for target in targets if target.get('type') == 'page'), None)
+    debugger_url = page_target.get('webSocketDebuggerUrl') if page_target else None
+    if not debugger_url:
+        raise RuntimeError("未找到可连接的 Chrome 页面标签")
+
+    connection = websocket.create_connection(debugger_url, timeout=5)
+    try:
+        connection.send(json.dumps({"id": 1, "method": "Network.getAllCookies"}))
+        while True:
+            response = json.loads(connection.recv())
+            if response.get('id') == 1:
+                return response.get('result', {}).get('cookies', [])
+    finally:
+        connection.close()
+
+def sync_cdp_cookies():
+    with CDP_LOCK:
+        try:
+            all_cookies = get_cdp_cookies()
+            platform_cookies = [
+                cookie for cookie in all_cookies
+                if cookie.get('domain', '').lstrip('.').endswith(('taobao.com', 'tmall.com'))
+            ]
+            if not platform_cookies:
+                raise RuntimeError("Chrome 中未找到淘宝或天猫 Cookie，请先在调试 Chrome 中登录")
+
+            cookie_string = '; '.join(
+                f"{cookie['name']}={cookie['value']}" for cookie in platform_cookies
+            )
+            save_cookie_to_file(cookie_string, COOKIE_FILE)
+            CDP_SYNC_STATUS.update({
+                "last_sync_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "cookie_count": len(platform_cookies),
+                "error": None,
+            })
+            print(f"[INFO] CDP Cookie 同步成功，共 {len(platform_cookies)} 项")
+            return {"success": True, **CDP_SYNC_STATUS}
+        except Exception as e:
+            CDP_SYNC_STATUS["error"] = str(e)
+            print(f"[WARN] CDP Cookie 同步失败: {e}")
+            return {"success": False, **CDP_SYNC_STATUS}
 
 def check_cookie_valid(cookies):
     """更可靠的检测：访问一个公开商品页，检查是否被重定向到登录页"""
@@ -434,6 +486,7 @@ def auto_monitor_all():
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=auto_monitor_all, trigger='interval', minutes=AUTO_MONITOR_INTERVAL, id='auto_monitor')
+scheduler.add_job(func=sync_cdp_cookies, trigger='interval', minutes=CDP_COOKIE_SYNC_INTERVAL, id='cdp_cookie_sync')
 scheduler.start()
 
 # ======================== API 路由 ========================
@@ -508,6 +561,31 @@ def api_cookie_status():
         return jsonify({"success": True, "valid": valid})
     except Exception as e:
         return jsonify({"success": False, "valid": False, "error": str(e)})
+
+@app.route('/api/cdp/status', methods=['GET'])
+def api_cdp_status():
+    try:
+        version = requests.get(f"{CDP_ENDPOINT}/json/version", timeout=2).json()
+        return jsonify({
+            "success": True,
+            "connected": True,
+            "browser": version.get('Browser', ''),
+            "endpoint": CDP_ENDPOINT,
+            **CDP_SYNC_STATUS,
+        })
+    except Exception as e:
+        return jsonify({
+            "success": True,
+            "connected": False,
+            "endpoint": CDP_ENDPOINT,
+            **CDP_SYNC_STATUS,
+            "error": CDP_SYNC_STATUS["error"] if CDP_SYNC_STATUS["error"] else str(e),
+        })
+
+@app.route('/api/cdp/sync', methods=['POST'])
+def api_sync_cdp_cookies():
+    result = sync_cdp_cookies()
+    return jsonify(result), 200 if result['success'] else 503
 
 @app.route('/')
 def index():

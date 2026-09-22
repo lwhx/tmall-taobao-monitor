@@ -135,6 +135,31 @@
             border-radius: 60px;
             display: inline-block;
         }
+        .connection-status {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+            margin-top: 16px;
+            padding: 12px 16px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 0.82rem;
+        }
+        .connection-status-title { color: #334155; font-weight: 600; }
+        .connection-status-item { color: #475569; }
+        .connection-status-item strong { color: #1e293b; font-weight: 600; }
+        .status-dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #94a3b8; }
+        .status-dot.connected { background: #16a34a; }
+        .status-dot.disconnected { background: #dc2626; }
+        .status-refresh { margin-left: auto; padding: 4px 8px; border: 0; background: transparent; color: #1f6392; cursor: pointer; font-size: 1rem; }
+        .status-sync { padding: 6px 12px; border: 0; border-radius: 6px; background: #1f6392; color: #ffffff; cursor: pointer; font-size: 0.78rem; font-weight: 600; }
+        .status-sync:disabled { background: #94a3b8; cursor: wait; }
+        .status-sync-result { color: #475569; }
+        .status-sync-result.success { color: #15803d; }
+        .status-sync-result.error { color: #b91c1c; }
+        .status-error { width: 100%; color: #b91c1c; }
         @media (max-width: 800px) { .dashboard-row { flex-direction: column; } .summary-col { margin-top: 16px; } }
         #dynamic-toast { transition: opacity 0.3s; }
     </style>
@@ -158,6 +183,17 @@
         <div style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center;">
             <span style="font-size:0.8rem; color:#5b6e8c;">🤖 自动监控每 30 分钟执行一次，价格变化自动记录并对比。</span>
             <span class="auto-refresh-tip" id="autoRefreshTip">⏱️ 数据每 30 秒自动刷新</span>
+        </div>
+        <div class="connection-status" aria-live="polite">
+            <span class="connection-status-title">CDP 与 Cookie</span>
+            <span class="connection-status-item"><span id="cdpConnectionDot" class="status-dot"></span><strong id="cdpConnectionState">检测中</strong></span>
+            <span class="connection-status-item">端点：<strong id="cdpEndpoint">--</strong></span>
+            <span class="connection-status-item">Cookie：<strong id="cdpCookieCount">--</strong></span>
+            <span class="connection-status-item">最近同步：<strong id="cdpLastSync">--</strong></span>
+            <button id="syncCdpStatusBtn" class="status-sync" type="button">立即同步 Cookie</button>
+            <span id="cdpSyncResult" class="status-sync-result">等待同步</span>
+            <button id="refreshCdpStatusBtn" class="status-refresh" type="button" title="刷新 CDP 状态" aria-label="刷新 CDP 状态">⟳</button>
+            <span id="cdpStatusError" class="status-error" hidden></span>
         </div>
     </div>
 
@@ -198,7 +234,7 @@
 </div>
 
 <div id="detailModal" class="modal"><div class="modal-content"><span class="modal-close" id="closeModal">&times;</span><h3>📦 商品详情</h3><div id="modalBody"></div></div></div>
-<div id="cookieModal" class="modal"><div class="modal-content"><span class="modal-close" id="closeCookieModal">&times;</span><h3>🍪 Cookie 设置</h3><p>当前状态：<span id="cookieStatus">检测中...</span></p><textarea id="newCookieInput" rows="6" placeholder="请粘贴完整的 Cookie 字符串" style="width:100%; margin:12px 0; border-radius:16px; padding:12px;"></textarea><button id="updateCookieBtn" class="btn-icon" style="background:#1f6392; color:white;">更新 Cookie</button></div></div>
+<div id="cookieModal" class="modal"><div class="modal-content"><span class="modal-close" id="closeCookieModal">&times;</span><h3>🍪 Cookie 设置</h3><p>当前状态：<span id="cookieStatus">检测中...</span></p><p>CDP 浏览器：<span id="cdpStatus">检测中...</span></p><button id="syncCdpBtn" class="btn-icon" style="margin-bottom:12px;">从 CDP 同步 Cookie</button><textarea id="newCookieInput" rows="6" placeholder="请粘贴完整的 Cookie 字符串" style="width:100%; margin:12px 0; border-radius:16px; padding:12px;"></textarea><button id="updateCookieBtn" class="btn-icon" style="background:#1f6392; color:white;">更新 Cookie</button></div></div>
 
 <script>
     let priceChart = null;
@@ -208,7 +244,7 @@
 
     function formatDate(ts) { return ts ? ts.slice(5,16).replace('-','/') : '--'; }
     function escapeHtml(s){ if(!s) return ''; return s.replace(/[&<>]/g, m=> ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m])); }
-    
+
     function showToast(msg, type='error') {
         let toast = document.getElementById('dynamic-toast');
         if (!toast) {
@@ -314,7 +350,7 @@
         if (width < 100) width = 600;
         canvas.width = width;
         canvas.height = width * 0.4;
-        
+
         // 准备最近7天的日期
         const last7days = [];
         const today = new Date();
@@ -324,7 +360,7 @@
             last7days.push(d.toISOString().slice(0,10));
         }
         console.log("[图表] 最近7天日期:", last7days);
-        
+
         // 构建每日最低价（取当天所有记录中的最低价）
         let dailyMap = new Map();
         records.forEach(rec => {
@@ -337,10 +373,10 @@
             }
         });
         console.log("[图表] 日期-价格映射:", Array.from(dailyMap.entries()));
-        
+
         let chartData = last7days.map(date => dailyMap.has(date) ? dailyMap.get(date) : null);
         console.log("[图表] 最终数据点:", chartData);
-        
+
         const ctx = canvas.getContext('2d');
         if (priceChart) priceChart.destroy();
         priceChart = new Chart(ctx, {
@@ -511,6 +547,91 @@
         }catch(e){ document.getElementById('cookieStatus').innerText='无法检测'; }
     }
 
+    async function checkCdpStatus(){
+        const status = document.getElementById('cdpStatus');
+        try{
+            const response = await fetch('/api/cdp/status');
+            const data = await response.json();
+            if(data.connected){
+                const synced = data.last_sync_at ? `，上次同步 ${data.last_sync_at}` : '，尚未同步';
+                status.innerText = `已连接${synced}`;
+                status.style.color = '#2c7a47';
+            }else{
+                status.innerText = '未连接，请以调试模式启动 Chrome';
+                status.style.color = '#b91c1c';
+            }
+        }catch(e){ status.innerText='无法检测'; }
+    }
+
+    async function refreshCdpPanel(){
+        const dot = document.getElementById('cdpConnectionDot');
+        const state = document.getElementById('cdpConnectionState');
+        const endpoint = document.getElementById('cdpEndpoint');
+        const cookieCount = document.getElementById('cdpCookieCount');
+        const lastSync = document.getElementById('cdpLastSync');
+        const error = document.getElementById('cdpStatusError');
+        try {
+            const response = await fetch('/api/cdp/status');
+            const data = await response.json();
+            endpoint.innerText = data.endpoint || '--';
+            cookieCount.innerText = data.last_sync_at ? `${data.cookie_count || 0} 项` : '尚未同步';
+            lastSync.innerText = data.last_sync_at || '--';
+            dot.className = `status-dot ${data.connected ? 'connected' : 'disconnected'}`;
+            state.innerText = data.connected ? '已连接' : '未连接';
+            error.hidden = !data.error;
+            error.innerText = data.error || '';
+        } catch (e) {
+            dot.className = 'status-dot disconnected';
+            state.innerText = '状态读取失败';
+            endpoint.innerText = '--';
+            cookieCount.innerText = '--';
+            lastSync.innerText = '--';
+            error.hidden = false;
+            error.innerText = '无法访问 CDP 状态接口，请检查监控服务。';
+        }
+    }
+
+    async function syncCdpCookies(){
+        const button = document.getElementById('syncCdpBtn');
+        button.disabled = true;
+        button.innerText = '同步中...';
+        try{
+            const response = await fetch('/api/cdp/sync', {method:'POST'});
+            const data = await response.json();
+            if(data.success){
+                showToast(`已同步 ${data.cookie_count} 项 Cookie`, 'info');
+                await checkCookieStatus();
+            }else{
+                showToast(data.error || 'CDP 同步失败', 'warning');
+            }
+        }catch(e){ showToast('CDP 同步失败，请检查 Chrome 调试端口', 'warning'); }
+        finally{ button.disabled = false; button.innerText = '从 CDP 同步 Cookie'; checkCdpStatus(); refreshCdpPanel(); }
+    }
+
+    async function syncCdpFromStatusPanel(){
+        const button = document.getElementById('syncCdpStatusBtn');
+        const result = document.getElementById('cdpSyncResult');
+        button.disabled = true;
+        button.innerText = '同步中...';
+        result.className = 'status-sync-result';
+        result.innerText = '正在从 CDP 读取 Cookie';
+        try {
+            const response = await fetch('/api/cdp/sync', {method:'POST'});
+            const data = await response.json();
+            if (!data.success) throw new Error(data.error || 'CDP 同步失败');
+            result.className = 'status-sync-result success';
+            result.innerText = `同步成功：${data.cookie_count} 项 Cookie`;
+            await checkCookieStatusAndNotify();
+        } catch (e) {
+            result.className = 'status-sync-result error';
+            result.innerText = `同步失败：${e.message || '请检查 CDP Chrome'}`;
+        } finally {
+            button.disabled = false;
+            button.innerText = '立即同步 Cookie';
+            refreshCdpPanel();
+        }
+    }
+
     // 强制刷新图表（仅重绘，不重新获取数据）
     function forceRefreshChart() {
         if (currentRecords.length) {
@@ -527,6 +648,7 @@
         refreshInterval = setInterval(() => {
             console.log("[自动刷新] 触发数据刷新");
             fetchRecords(currentPage);
+            refreshCdpPanel();
         }, 30000);  // 30秒
     }
 
@@ -535,8 +657,11 @@
     document.getElementById('closeCookieModal').onclick=()=>document.getElementById('cookieModal').style.display='none';
     window.onclick=e=>{ if(e.target===document.getElementById('detailModal')) document.getElementById('detailModal').style.display='none';
                         if(e.target===document.getElementById('cookieModal')) document.getElementById('cookieModal').style.display='none'; };
-    document.getElementById('cookieSettingBtn').onclick=()=>{ document.getElementById('cookieModal').style.display='flex'; checkCookieStatus(); };
+    document.getElementById('cookieSettingBtn').onclick=()=>{ document.getElementById('cookieModal').style.display='flex'; checkCookieStatus(); checkCdpStatus(); };
     document.getElementById('updateCookieBtn').onclick=async()=>{ let c=document.getElementById('newCookieInput').value.trim(); if(!c) return; let resp=await fetch('/api/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:c})}); let data=await resp.json(); if(data.success){ alert('Cookie已更新'); document.getElementById('cookieModal').style.display='none'; await checkCookieStatusAndNotify(); fetchRecords(currentPage); } else alert('更新失败：'+data.error); };
+    document.getElementById('syncCdpBtn').onclick=syncCdpCookies;
+    document.getElementById('syncCdpStatusBtn').onclick=syncCdpFromStatusPanel;
+    document.getElementById('refreshCdpStatusBtn').onclick=refreshCdpPanel;
     document.getElementById('monitorBtn').addEventListener('click',monitorItem);
     document.getElementById('refreshBtn').addEventListener('click',()=>fetchRecords(1));
     document.getElementById('clearAllBtn').addEventListener('click',async()=>{ if(confirm('清空所有记录？')){ await fetch('/api/records?all=1',{method:'DELETE'}); fetchRecords(1); } });
@@ -548,6 +673,7 @@
     // 初始化
     startAutoRefresh();
     fetchRecords(1);
+    refreshCdpPanel();
 </script>
 </body>
 </html>

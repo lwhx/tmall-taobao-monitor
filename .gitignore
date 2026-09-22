@@ -3,6 +3,12 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Local monitoring data and browser session
+cookies.txt
+monitor.db
+chrome_profile/
+.cdp_cookie_ready
+
 # C extensions
 *.so
 
